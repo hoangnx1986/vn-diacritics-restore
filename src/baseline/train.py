@@ -7,20 +7,14 @@ Usage:
 """
 
 import argparse
-import re
 import sys
-import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ngram import NgramModel  # noqa: E402
 
-_SYLLABLE_RE = re.compile(r"[^\W\d_]+")
-
-
-def tokenize_sentence(line: str) -> list[str]:
-    line = unicodedata.normalize("NFC", line)
-    return [tok.lower() for tok in _SYLLABLE_RE.findall(line)]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tokenize_utils import tokenize_sentence  # noqa: E402
 
 
 def main() -> None:
