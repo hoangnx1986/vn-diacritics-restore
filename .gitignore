@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Claude Code session-local state, not project source.
+.claude/
+
+# Generated data artifacts — regenerate via data/*.py scripts, not tracked.
+# See CLAUDE.md: "data/ scripts to fetch + preprocess corpora (not the raw
+# data itself)".
+data/*.json
+data/*.txt
