@@ -90,6 +90,7 @@ def main() -> None:
     parser.add_argument("--test-corpus", type=Path, default=Path("data/test_corpus.txt"))
     parser.add_argument("--dictionary", type=Path, default=Path("data/dictionary.json"))
     parser.add_argument("--ngram", type=Path, default=Path("data/ngram_counts.json"))
+    parser.add_argument("--neural-checkpoint", type=Path, default=Path("data/neural/checkpoint.pt"))
     args = parser.parse_args()
 
     sentences = [
@@ -106,6 +107,14 @@ def main() -> None:
         ),
         "N-gram + Viterbi baseline": evaluate(sentences, restorer.restore),
     }
+
+    if args.neural_checkpoint.exists():
+        # Deferred import: eval.py should stay runnable for baseline-only
+        # comparisons without requiring torch to be installed.
+        from model.model import NeuralRestorer  # noqa: PLC0415
+
+        neural_restorer = NeuralRestorer(args.dictionary, args.neural_checkpoint)
+        results["Neural (Transformer)"] = evaluate(sentences, neural_restorer.restore)
 
     print(f"Evaluated on {len(sentences)} held-out sentences\n")
     header = f"{'model':<45}{'syllable acc':>14}{'char acc':>12}{'exact match':>14}"

@@ -10,6 +10,7 @@ __pycache__/
 # data itself)".
 data/*.json
 data/*.txt
+data/neural/
 
 # Gradio's local flag-button output — logs whatever text a user typed in,
 # should never end up committed.
