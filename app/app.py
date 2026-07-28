@@ -12,7 +12,11 @@ from pathlib import Path
 
 import gradio as gr
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+_HERE = Path(__file__).resolve().parent
+# Dev repo layout: app.py lives in app/, so data/ and src/ are one level up.
+# Space deployment layout (see app/deploy_space.py): app.py, data/, and
+# src/ all sit flat at the Space repo root, alongside each other.
+REPO_ROOT = _HERE if (_HERE / "data").exists() else _HERE.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from baseline import BaselineRestorer  # noqa: E402
 
