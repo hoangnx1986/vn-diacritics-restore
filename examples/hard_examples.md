@@ -8,9 +8,21 @@ honest failure-case section, per CLAUDE.md.
 
 These are not bugs — the code is doing exactly what it's designed to do
 (pick the sequence the trigram LM scores highest). They're corpus
-limitations: a ~98K-sentence, Wikipedia-only training set doesn't have
-enough signal to resolve every ambiguity correctly. A bigger/more
-diverse corpus (CLAUDE.md's own next step) should fix most of these.
+limitations: training data that doesn't have enough signal in the right
+register to resolve every ambiguity correctly.
+
+**Update after broadening the corpus:** we added ~11.4K colloquial
+sentences from a student-feedback dataset (UIT-VSFC) alongside the
+original ~98K Wikipedia sentences and retrained (see `data/corpus.txt`,
+`src/baseline/train.py`). Held-out syllable accuracy barely moved
+(89.0% → 89.2%) but one specific miss below (`quá`) got fixed, while the
+`bé`/`trẻ`/`bạn` cases did not. That's itself an informative result: a
+colloquial source only helps the ambiguities it actually contains
+examples of. Student course-feedback text uses casual intensifiers like
+"quá" often, but has little reason to talk about children ("bé", "trẻ")
+or address someone as "bạn" — so those specific gaps need a source in
+*that* register (parenting/education content, casual dialogue) to close,
+not just "more colloquial text" in general.
 
 ## Systematic: `be` → child (bé) vs. faction/pedestal/side (bè/bệ/bề)
 
@@ -41,10 +53,16 @@ Found during manual testing (not the news set): Wikipedia's formal
 register underrepresents casual/spoken words relative to their formal
 homographs.
 
-| Input | Expected | Baseline output |
-|---|---|---|
-| `Chao ban, ban khoe khong?` | `Chào bạn, bạn khỏe không?` | `Chào bán, bản khỏe không?` (bán = sell, bản = version) |
-| `...troi dep qua` | `...trời đẹp quá` (quá = intensifier "so") | `...trời đẹp qua` (qua = pass by) |
+| Input | Expected | Baseline output (Wikipedia-only) | Baseline output (+ colloquial corpus) |
+|---|---|---|---|
+| `Chao ban, ban khoe khong?` | `Chào bạn, bạn khỏe không?` | `Chào bán, bản khỏe không?` | `Chào bán, bản khỏe không?` — **still wrong** |
+| `...troi dep qua` | `...trời đẹp quá` (intensifier "so") | `...trời đẹp qua` (qua = pass by) | `...trời đẹp quá` — **fixed** |
+
+`quá` improved because the added student-feedback text actually uses
+casual intensifiers; `bạn` didn't, because that dataset has little
+reason to address someone as "bạn" either — see the "Update after
+broadening the corpus" note above for what this implies about corpus
+selection.
 
 ## Non-goal, by design: code-switched English
 

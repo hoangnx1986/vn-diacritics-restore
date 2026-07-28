@@ -13,6 +13,9 @@ for news-register text vs. Wikipedia's encyclopedic register:
     python data/fetch_corpus.py --articles 600 --output data/corpus.txt
     python data/fetch_corpus.py --dataset tiennv/vietnamese-news --config default \
         --articles 300 --output data/test_corpus.txt
+    python data/fetch_corpus.py --dataset uitnlp/vietnamese_students_feedback \
+        --config default --text-column sentence --min-row-chars 3 --no-split \
+        --articles 11400 --output data/corpus_colloquial.txt
 
 This is a *starter* corpus sized for quickly validating the pipeline
 end-to-end, not a production-scale training set — CLAUDE.md's data notes
@@ -31,12 +34,15 @@ from pathlib import Path
 API_URL = "https://datasets-server.huggingface.co/rows"
 SPLIT = "train"
 PAGE_SIZE = 100  # datasets-server's per-request row cap
-MIN_ARTICLE_CHARS = 300  # skip near-empty stub/disambiguation articles
 
 # Rough sentence boundary: '.', '!', or '?' followed by whitespace and a
 # capital/quote. Not linguistically perfect, but good enough for n-gram
 # training sequences.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-Ỹ\"“])")
+
+
+class RateLimited(Exception):
+    pass
 
 
 def fetch_page(dataset: str, config: str, offset: int, length: int) -> dict:
@@ -45,9 +51,15 @@ def fetch_page(dataset: str, config: str, offset: int, length: int) -> dict:
         f"&offset={offset}&length={length}"
     )
     result = subprocess.run(
-        ["curl", "-s", "--max-time", "30", url], capture_output=True, text=True, check=True
+        ["curl", "-s", "-w", "\n%{http_code}", "--max-time", "30", url],
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    return json.loads(result.stdout)
+    body, _, status = result.stdout.rpartition("\n")
+    if status == "429":
+        raise RateLimited()
+    return json.loads(body)
 
 
 def extract_sentences(text: str) -> list[str]:
@@ -71,6 +83,19 @@ def main() -> None:
     parser.add_argument("--text-column", default="text")
     parser.add_argument("--start-offset", type=int, default=0)
     parser.add_argument("--articles", type=int, default=600, help="number of rows to pull")
+    parser.add_argument(
+        "--min-row-chars",
+        type=int,
+        default=300,
+        help="skip rows shorter than this (300 suits full articles; use a small "
+        "value like 3 for row-per-sentence datasets)",
+    )
+    parser.add_argument(
+        "--no-split",
+        action="store_true",
+        help="treat each row's text as a single training line instead of "
+        "splitting on sentence boundaries — use for row-per-sentence datasets",
+    )
     parser.add_argument("--output", type=Path, default=Path("data/corpus.txt"))
     args = parser.parse_args()
 
@@ -78,26 +103,47 @@ def main() -> None:
     kept_articles = 0
     offset = args.start_offset
     end_offset = args.start_offset + args.articles
+    consecutive_failures = 0
+    max_consecutive_failures = 8
 
     while offset < end_offset:
         length = min(PAGE_SIZE, end_offset - offset)
         try:
             data = fetch_page(args.dataset, args.config, offset, length)
+        except RateLimited:
+            consecutive_failures += 1
+            if consecutive_failures > max_consecutive_failures:
+                print(f"\nstill rate-limited after {consecutive_failures} tries, giving up early", file=sys.stderr)
+                break
+            backoff = min(5 * 2**consecutive_failures, 120)
+            print(f"\nrate limited at offset {offset}, backing off {backoff}s", file=sys.stderr)
+            time.sleep(backoff)
+            continue
         except Exception as exc:  # network hiccups shouldn't kill a long run
-            print(f"page fetch failed at offset {offset}: {exc}", file=sys.stderr)
-            time.sleep(2)
+            consecutive_failures += 1
+            if consecutive_failures > max_consecutive_failures:
+                print(f"\ntoo many consecutive failures at offset {offset}, giving up early", file=sys.stderr)
+                break
+            print(f"\npage fetch failed at offset {offset}: {exc}", file=sys.stderr)
+            time.sleep(min(2 * consecutive_failures, 30))
             continue
 
+        consecutive_failures = 0
         for row in data.get("rows", []):
             text = row["row"][args.text_column]
-            if len(text) < MIN_ARTICLE_CHARS:
+            if len(text) < args.min_row_chars:
                 continue
-            all_sentences.extend(extract_sentences(text))
+            if args.no_split:
+                normalized = unicodedata.normalize("NFC", text).strip()
+                if normalized:
+                    all_sentences.append(normalized)
+            else:
+                all_sentences.extend(extract_sentences(text))
             kept_articles += 1
 
         offset += length
         print(f"{offset - args.start_offset}/{args.articles} rows fetched ({kept_articles} usable), {len(all_sentences)} sentences", end="\r")
-        time.sleep(0.3)  # be polite to the API
+        time.sleep(0.5)  # be polite to the API
 
     print()
     args.output.parent.mkdir(parents=True, exist_ok=True)
