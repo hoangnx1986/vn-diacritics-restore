@@ -53,34 +53,54 @@ class NeuralRestorer:
             return text
 
         tokens = _tokenize(text)
-        slot_indices: list[int] = []
-        slot_keys: list[str] = []
-        slot_candidates: list[list[str]] = []
+        # Every alpha token's stripped form goes into the model's input
+        # sequence -- OOV and already-accented tokens still appear as
+        # *context* for their neighbors, exactly as they did during
+        # training (src/model/dataset.py never drops a token from the
+        # sequence just because it has no loss target). Only a subset of
+        # these positions are "predictable" and get a candidate list.
+        all_keys: list[str] = []
+        alpha_token_indices: list[int] = []
+        predictable_positions: list[int] = []  # indices into all_keys
+        candidates_per_slot: list[list[str]] = []
 
         for i, tok in enumerate(tokens):
             if not tok.isalpha():
                 continue
+            key = strip_diacritics(tok).lower()
+            all_keys.append(key)
+            alpha_token_indices.append(i)
+            seq_pos = len(all_keys) - 1
+
             if strip_diacritics(tok) != tok:
-                continue  # already accented (or non-Vietnamese-diacritic) -- leave as is
-            key = tok.lower()
+                continue  # already accented -- context only, leave as is
             candidates = self.dictionary.get(key)
             if not candidates:
-                continue  # OOV: no legal candidate set, no model call -- identity passthrough
-            slot_indices.append(i)
-            slot_keys.append(key)
-            slot_candidates.append(candidates)
+                continue  # OOV -- context only, identity passthrough
+            predictable_positions.append(seq_pos)
+            candidates_per_slot.append(candidates)
 
-        if not slot_indices:
+        if not predictable_positions:
             return text
 
-        chosen = self._predict(slot_keys, slot_candidates)
+        chosen = self._predict(all_keys, predictable_positions, candidates_per_slot)
         out_tokens = list(tokens)
-        for idx, cand in zip(slot_indices, chosen):
-            out_tokens[idx] = _apply_case(tokens[idx], cand)
+        for seq_pos, cand in zip(predictable_positions, chosen):
+            token_idx = alpha_token_indices[seq_pos]
+            out_tokens[token_idx] = _apply_case(tokens[token_idx], cand)
         return "".join(out_tokens)
 
-    def _predict(self, keys: list[str], candidates_per_slot: list[list[str]]) -> list[str]:
-        seq_len = len(keys)
+    def _predict(
+        self,
+        all_keys: list[str],
+        predictable_positions: list[int],
+        candidates_per_slot: list[list[str]],
+    ) -> list[str]:
+        """`all_keys` is the full alpha-token sequence (context for every
+        position); `predictable_positions` indexes into it for the subset
+        that actually needs a prediction, with `candidates_per_slot` in the
+        same order."""
+        seq_len = len(all_keys)
         max_candidates = max(len(c) for c in candidates_per_slot)
 
         char_ids = torch.full((1, seq_len, MAX_CHAR_LEN), self.char_vocab.pad_id, dtype=torch.long)
@@ -88,11 +108,13 @@ class NeuralRestorer:
         candidate_ids = torch.zeros((1, seq_len, max_candidates), dtype=torch.long)
         candidate_valid = torch.zeros((1, seq_len, max_candidates), dtype=torch.bool)
 
-        for i, (key, candidates) in enumerate(zip(keys, candidates_per_slot)):
+        for i, key in enumerate(all_keys):
             char_ids[0, i] = torch.tensor(self.char_vocab.encode(key, MAX_CHAR_LEN))
-            ids = [self.class_vocab.id_of(c) for c in candidates]
-            candidate_ids[0, i, : len(ids)] = torch.tensor(ids)
-            candidate_valid[0, i, : len(ids)] = True
+
+        for slot_i, pos in enumerate(predictable_positions):
+            ids = [self.class_vocab.id_of(c) for c in candidates_per_slot[slot_i]]
+            candidate_ids[0, pos, : len(ids)] = torch.tensor(ids)
+            candidate_valid[0, pos, : len(ids)] = True
 
         char_ids = char_ids.to(self.device)
         padding_mask = padding_mask.to(self.device)
@@ -103,7 +125,8 @@ class NeuralRestorer:
             scores = self.model(char_ids, padding_mask, candidate_ids, candidate_valid)  # (1, S, C)
 
         chosen = []
-        for i, candidates in enumerate(candidates_per_slot):
-            local_idx = scores[0, i, : len(candidates)].argmax().item()
+        for slot_i, pos in enumerate(predictable_positions):
+            candidates = candidates_per_slot[slot_i]
+            local_idx = scores[0, pos, : len(candidates)].argmax().item()
             chosen.append(candidates[local_idx])
         return chosen
