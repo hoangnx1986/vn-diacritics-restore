@@ -12,20 +12,29 @@ Hugging Face Space is one command away via `app/deploy_space.py`; not yet
 deployed from this checkout.)
 
 **Headline number:** on a held-out test set from a *different domain* than
-training (news articles vs. a Wikipedia-trained model — see
+training (news articles vs. a Wikipedia+colloquial-trained model — see
 [Evaluation](#evaluation)):
 
 | model | per-syllable accuracy | per-char accuracy | exact sentence match |
 |---|---|---|---|
 | naive: most-frequent spelling, no context | 52.5% | 89.2% | 0.2% |
 | **n-gram + dictionary baseline** | **89.2%** | **97.5%** | **16.4%** |
+| neural (Transformer, syllable classification) | 86.3% | 96.8% | 10.7% |
 
-That ~37-point jump is the whole point of this project: most toneless
-Vietnamese syllables have several valid accented spellings (`ma` → `ma,
-má, mà, mã, mả, mạ`), and only sentence context can tell them apart. A
-plain dictionary lookup can't do that; this can.
+That ~37-point jump from naive to the n-gram baseline is the whole point of
+this project: most toneless Vietnamese syllables have several valid
+accented spellings (`ma` → `ma, má, mà, mã, mả, mạ`), and only sentence
+context can tell them apart. A plain dictionary lookup can't do that; a
+scorer that looks at neighboring words can.
 
-(That exact number is from a corpus of ~98K Wikipedia sentences plus
+The neural model is a genuine second finding, not a clean win: it reaches
+94.4% on its *own* validation split (held out from the training corpus)
+but comes in slightly *below* the n-gram baseline on this cross-domain
+news set — a real generalization gap, not a bug. See
+[Known limitations](#known-limitations) for what that means and why it's
+worth reporting honestly rather than only showing the flattering number.
+
+(The baseline number is from a corpus of ~98K Wikipedia sentences plus
 ~11.4K colloquial student-feedback sentences merged in — see
 [Data sources](#data-sources--licenses). The quickstart below uses
 Wikipedia alone for simplicity; numbers will be close but not identical.)
@@ -40,6 +49,10 @@ python src/baseline/train.py --corpus data/corpus.txt --output data/ngram_counts
 python app/app.py   # -> http://127.0.0.1:7860
 ```
 
+The app has a Baseline/Neural toggle if you've also trained the neural
+model (`python src/model/train.py` — see [How it works](#how-it-works));
+otherwise it just runs the baseline.
+
 Or without the UI:
 
 ```python
@@ -49,6 +62,16 @@ from baseline import BaselineRestorer
 restorer = BaselineRestorer("data/dictionary.json", "data/ngram_counts.json")
 restorer.restore("toi di hoc o Ha Noi hom nay troi dep qua")
 # 'tôi đi học ở Hà Nội hôm nay trời đẹp quá'
+```
+
+Or the neural model directly:
+
+```python
+import sys; sys.path.insert(0, "src")
+from model import NeuralRestorer
+
+restorer = NeuralRestorer("data/dictionary.json", "data/neural/checkpoint.pt")
+restorer.restore("toi di hoc o Ha Noi hom nay troi dep qua")
 ```
 
 ## How it works
@@ -70,10 +93,19 @@ can never hallucinate unrelated text.
    language model scores candidate sequences; exact Viterbi decoding picks
    the best-scoring sequence for the whole sentence, which is where context
    actually resolves the ambiguity.
+4. **`src/model/`** — a ~6.8M-parameter Transformer that does the same
+   syllable-classification job with a different scorer: each toneless
+   syllable's characters are composed into a vector (a small char-CNN, so
+   novel/rare syllables never collapse to a generic `<unk>`), a
+   bidirectional Transformer encoder attends over the whole sentence, and
+   each position is scored against its `dictionary.json` candidates only
+   (masked, so an illegal spelling can never be chosen) — no Viterbi
+   needed, since attention already integrates full-sentence context before
+   classification runs. `python src/model/train.py` fits it on
+   `data/corpus.txt`.
 
-Every model (this baseline, and any future neural model) sits behind the
-same `restore(text: str) -> str` interface, so the demo and eval code don't
-care which one is loaded.
+Every model sits behind the same `restore(text: str) -> str` interface, so
+the demo and eval code don't care which one is loaded.
 
 ## Handling real input
 
@@ -89,7 +121,8 @@ care which one is loaded.
 python data/fetch_corpus.py --dataset tiennv/vietnamese-news --config default \
     --articles 250 --output data/test_corpus.txt
 python src/eval.py --test-corpus data/test_corpus.txt \
-    --dictionary data/dictionary.json --ngram data/ngram_counts.json
+    --dictionary data/dictionary.json --ngram data/ngram_counts.json \
+    --neural-checkpoint data/neural/checkpoint.pt   # adds the neural row if it exists
 ```
 
 Metrics: per-syllable accuracy (primary), per-character accuracy,
@@ -116,6 +149,13 @@ for real, mined failure cases and the reasoning behind them. Short version:
   isn't handled: an English word that happens to spell a valid Vietnamese
   syllable (`the` → `thể`) gets "corrected" anyway, since there's no
   language-ID step. Fixing this is a deliberately separate future project.
+- **The neural model generalizes worse cross-domain than the simpler
+  baseline**, despite scoring far higher (94.4%) on its own in-domain
+  validation split. On the same held-out news test set, it lands at 86.3%
+  vs. the n-gram baseline's 89.2% — a real overfitting-to-training-domain
+  effect, not a bug. It fixes some of the baseline's specific misses but
+  introduces new, more scattered ones elsewhere. See
+  `examples/hard_examples.md` for the side-by-side comparison.
 
 ## Repo structure
 
@@ -124,8 +164,11 @@ data/            # fetch/preprocess scripts (fetch_corpus.py, build_dictionary.p
                   # generated artifacts (*.json, *.txt) are gitignored, not committed
 src/
   strip.py       # canonical diacritic-stripping map
+  tokenize_utils.py  # shared corpus-line tokenization for training data
   baseline/      # n-gram + dictionary model (ngram.py, model.py, train.py)
-  eval.py        # per-syllable / per-char / exact-match metrics
+  model/         # neural model (vocab.py, dataset.py, architecture.py, train.py, model.py) —
+                  # trained checkpoint lives at data/neural/checkpoint.pt, gitignored
+  eval.py        # per-syllable / per-char / exact-match metrics, baseline + optional neural row
 app/             # Gradio demo + deploy_space.py
 examples/        # curated hard/ambiguous examples for spot-checks
 tests/           # pytest suite (25 tests, all against synthetic fixtures —
@@ -140,7 +183,7 @@ tests/           # pytest suite (25 tests, all against synthetic fixtures —
   (`20231101.vi`, CC-BY-SA-3.0/GFDL) plus
   [`uitnlp/vietnamese_students_feedback`](https://huggingface.co/datasets/uitnlp/vietnamese_students_feedback)
   (license unspecified upstream — used only to derive local n-gram
-  statistics, not redistributed).
+  statistics and to train the neural model, not redistributed).
 - Held-out eval set: [`tiennv/vietnamese-news`](https://huggingface.co/datasets/tiennv/vietnamese-news)
   (license unspecified upstream — same caveat: local eval only, not
   redistributed).
@@ -152,6 +195,6 @@ committed to this repo; regenerate them with the scripts above.
 
 - Not a translator, spell-checker, or grammar corrector.
 - Not solving Vietnamese–English code-switching (see Known limitations).
-- The neural token-classification model (ByT5 or similar) is a deliberate
-  next step, not part of this baseline — CLAUDE.md's shipping order is
-  baseline first, improve second.
+- Comparing against a fine-tuned Vietnamese PLM (e.g. PhoBERT-style) is an
+  explicitly optional future phase per CLAUDE.md ("if there's appetite"),
+  not something this project commits to.

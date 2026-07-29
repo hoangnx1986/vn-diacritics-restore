@@ -1,10 +1,10 @@
 # Hard / ambiguous examples
 
-A small, hand-picked set of real failures from the n-gram baseline,
-mined from the held-out news test set (`data/test_corpus.txt`, a
-different domain than the Wikipedia training corpus — see
-`src/eval.py`). Kept for qualitative spot-checks and for the README's
-honest failure-case section, per CLAUDE.md.
+A small, hand-picked set of real failures from both the n-gram baseline
+and the neural model, mined from the held-out news test set
+(`data/test_corpus.txt`, a different domain than the Wikipedia+colloquial
+training corpus — see `src/eval.py`). Kept for qualitative spot-checks
+and for the README's honest failure-case section, per CLAUDE.md.
 
 These are not bugs — the code is doing exactly what it's designed to do
 (pick the sequence the trigram LM scores highest). They're corpus
@@ -63,6 +63,50 @@ casual intensifiers; `bạn` didn't, because that dataset has little
 reason to address someone as "bạn" either — see the "Update after
 broadening the corpus" note above for what this implies about corpus
 selection.
+
+## Neural model: much higher in-domain accuracy, but worse cross-domain generalization
+
+Phase 2 (`src/model/`) trains a ~6.8M-parameter Transformer that
+classifies each syllable using full-sentence bidirectional attention
+instead of n-gram+Viterbi. On its own validation split (held out from
+the *same* training corpus), it reaches a striking **94.4%** syllable
+accuracy — far above anything the n-gram baseline achieves in-domain.
+But on `data/test_corpus.txt` (the news-domain held-out set — a genuinely
+different domain than training, same set used for the baseline's
+headline number), the comparison inverts:
+
+| model | syllable acc | char acc | exact match |
+|---|---|---|---|
+| Naive (most-frequent candidate, no context) | 52.5% | 89.2% | 0.2% |
+| N-gram + Viterbi baseline | **89.2%** | **97.5%** | **16.4%** |
+| Neural (Transformer) | 86.3% | 96.8% | 10.7% |
+
+The neural model is *worse* than the simpler n-gram baseline at
+generalizing to unseen domain/register, despite learning its own
+training distribution far better. This is a textbook overfitting/
+generalization story, not a bug: a 6.8M-parameter model has much more
+capacity to pick up training-domain-specific associations than a
+counting-based n-gram model with backoff smoothing, and some of what it
+learned from Wikipedia+colloquial text apparently doesn't transfer as
+cleanly to news-register text.
+
+Side-by-side on the exact hard examples already documented above:
+
+| Input (abbreviated) | Baseline | Neural |
+|---|---|---|
+| "...nhiều bé dù chăm chỉ..." | `bè` (wrong) | `be`, plus **new** errors elsewhere in the same sentence (`đủ`, `chấm`, `cùng`, `chăng` all wrong) |
+| "...những bé thuộc nhóm..." | `bệ` (wrong) | `bé` — **correct**, but `nắm`→`năm` and `bí`→`bị` newly wrong |
+| "Ban cũng nên chỉ dẫn trẻ..." | `Bản` (wrong) | `Ban` (also wrong, a different miss) |
+| "...do trẻ có thể bị áp lực..." | `trễ` (wrong) | `trễ` (same wrong answer) |
+| "Chào bạn, bạn khỏe không?" | `bán, bản` (both wrong) | `bán, bán` (both wrong, different miss) |
+| canonical CLAUDE.md sentence | ✓ correct | ✓ correct |
+
+Not uniformly worse — it does fix cases the baseline misses (the "bé"
+example) — but on this specific cross-domain set it introduces more
+scattered new errors than it resolves, netting out slightly behind. Both
+models still share the exact same dictionary-coverage ceiling (same
+`data/dictionary.json`), so this gap is purely about the scoring
+mechanism's generalization, not candidate legality.
 
 ## Non-goal, by design: code-switched English
 
